@@ -16,7 +16,7 @@ int main()
 	std::vector<int64_t> arr( IO::GetValueFromUser<std::int64_t>("Eneter array size:\n", [](auto &val) { return val > 0; }) );
 	
 	std::srand(unsigned(time(0)));
-	std::generate(arr.begin(), arr.end(), []() { return std::rand() % 1000 - 2000; });
+	std::generate(arr.begin(), arr.end(), []() { return std::rand() % 1000 - 499; });
 		
 	Log::Print(arr.cbegin(), arr.cend(), "source array");
 	

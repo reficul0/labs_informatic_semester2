@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <functional>
 #include <experimental/filesystem>
 
 #include <mutex>
@@ -24,7 +25,8 @@
 std::mutex outputToFile;
 std::mutex progressUpdate;
 
-void CalcAverage(size_t size, 
+template<typename FuncT>
+void CalcAverage(FuncT &&func, size_t size,
 	std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id
 ) noexcept
 {
@@ -37,7 +39,7 @@ void CalcAverage(size_t size,
 		std::generate(arr.begin(), arr.end(), []() { return std::rand() % 1000 - 2000; });
 
 		Sort::Info<uint64_t> info{ 0,0 };
-		Sort::Insertion(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
+		func(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
 		infos.push_back(info);
 	}
 
@@ -52,7 +54,7 @@ void CalcAverage(size_t size,
 
 	{
 		std::lock_guard<std::mutex> outputToFileLock(outputToFile);
-		ostream << size << "; " << averageInfo.comparers << "; " << averageInfo.swaps << '\n';
+		ostream << size << "; " << averageInfo.comparers + averageInfo.swaps << '\n';
 	}
 
 	std::lock_guard<std::mutex> progressUpdateLock(progressUpdate);
@@ -60,23 +62,25 @@ void CalcAverage(size_t size,
 	progresses[id] += 0.01;
 	Log::Progress(progresses);
 }
-void CalcAverageOfRange(size_t first, size_t last, 
+template<typename FuncT>
+void CalcAverageOfRange(FuncT &&func, size_t first, size_t last,
 	std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id
 ) noexcept
 {
 	for (size_t size = first; size <= last; size+=100)
-		CalcAverage(size, ostream, progresses, id);
+		CalcAverage(std::forward<FuncT>(func), size, ostream, progresses, id);
 }
 
 namespace impl
 {
-	void Fast(std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id, uint16_t threadsCount) noexcept
+	template<typename FuncT>
+	void Fast(FuncT &&func, std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id, uint16_t threadsCount) noexcept
 	{
 		using ThreadPool = std::queue<std::thread>;
 		ThreadPool threadPool;
 		size_t stepSize = 10000 / threadsCount;
 		for (size_t size(0); size < 10000; size += stepSize)
-			threadPool.push(std::thread(&CalcAverageOfRange, size + 100, size + stepSize, std::ref(ostream), std::ref(progresses), id));
+			threadPool.push(std::thread(&CalcAverageOfRange<FuncT>, std::forward<FuncT>(func), size + 100, size + stepSize, std::ref(ostream), std::ref(progresses), id));
 
 		while (!threadPool.empty())
 		{
@@ -84,9 +88,10 @@ namespace impl
 			threadPool.pop();
 		}
 	}
-	void Slow(std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id) noexcept
+	template<typename FuncT>
+	void Slow(FuncT &&func, std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id) noexcept
 	{
-		CalcAverageOfRange(100, 10000, ostream, progresses, id);
+		CalcAverageOfRange(std::forward<FuncT>(func), 100, 10000, ostream, progresses, id);
 	}
 }
 
@@ -122,16 +127,18 @@ int main()
 	using namespace std::chrono;
 
 	std::unordered_map<std::string, float> progresses;
+	auto testee = [](auto &info, auto begin, auto end, auto pred) { Sort::Insertion(info, begin, end, pred); };
 
 	high_resolution_clock::time_point beginTime = high_resolution_clock::now();
-	demonstration::Demonstrate(progresses, "slow_impl", [](std::ostream &out, auto &progresses, auto &myName) {
-		impl::Slow(out, progresses, myName);
+	demonstration::Demonstrate(progresses, "slow_impl", [testee](std::ostream &out, auto &progresses, auto &myName) {
+		impl::Slow(testee, out, progresses, myName);
 	});
 	std::chrono::duration<double, std::milli> slowImplDuration = beginTime - high_resolution_clock::now();
 
 	beginTime = high_resolution_clock::now();
-	demonstration::Demonstrate(progresses, "fast_impl", [&](std::ostream &out, auto &progresses, auto &myName) {
-		impl::Fast(out, progresses, myName, 50);
+	demonstration::Demonstrate(progresses, "fast_impl", [testee](std::ostream &out, auto &progresses, auto &myName) {
+		static constexpr uint16_t threadsCount = 50;
+		impl::Fast(testee, out, progresses, myName, threadsCount);
 	});
 	std::chrono::duration<double, std::milli> fastImplDuration = beginTime - high_resolution_clock::now();
 
