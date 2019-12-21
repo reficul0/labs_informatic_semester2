@@ -22,13 +22,11 @@
 #include "../include/Sort.h"
 #include "../include/Log.h"
 
-std::mutex outputToFile;
+std::mutex outputToFile;// todo нужно только мультитридовому
 std::mutex progressUpdate;
 
 template<typename FuncT>
-void CalcAverage(FuncT &&func, size_t size,
-	std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id
-) noexcept
+void CalcAverage(FuncT &&func, size_t size, std::ostream &ostream) noexcept
 {
 	std::vector<int64_t> arr;
 
@@ -56,66 +54,124 @@ void CalcAverage(FuncT &&func, size_t size,
 		std::lock_guard<std::mutex> outputToFileLock(outputToFile);
 		ostream << size << "; " << averageInfo.comparers + averageInfo.swaps << '\n';
 	}
-
-	std::lock_guard<std::mutex> progressUpdateLock(progressUpdate);
-	system("cls"); 
-	progresses[id] += 0.01;
-	Log::Progress(progresses);
-}
-template<typename FuncT>
-void CalcAverageOfRange(FuncT &&func, size_t first, size_t last,
-	std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id
-) noexcept
-{
-	for (size_t size = first; size <= last; size+=100)
-		CalcAverage(std::forward<FuncT>(func), size, ostream, progresses, id);
 }
 
-namespace impl
+namespace executors
 {
-	template<typename FuncT>
-	void Fast(FuncT &&func, std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id, uint16_t threadsCount) noexcept
+	class Executor
 	{
-		using ThreadPool = std::queue<std::thread>;
-		ThreadPool threadPool;
-		size_t stepSize = 10000 / threadsCount;
-		for (size_t size(0); size < 10000; size += stepSize)
-			threadPool.push(std::thread(&CalcAverageOfRange<FuncT>, std::forward<FuncT>(func), size + 100, size + stepSize, std::ref(ostream), std::ref(progresses), id));
+	protected:
+		std::string const _id;
+		std::shared_ptr<std::ofstream> _ostream;
+		std::shared_ptr<std::unordered_map<std::string, float>> _progresses;
 
-		while (!threadPool.empty())
+		std::tuple<size_t, size_t> _borders;
+	public:
+		template<typename StringT>
+		Executor(
+			StringT &&id,
+			std::shared_ptr<std::unordered_map<std::string, float>> const &progresses,
+			std::tuple<size_t, size_t> const &borders
+		)
+			: _id(std::forward<StringT>(id))
+			, _progresses(progresses)
+			, _borders(borders)
 		{
-			threadPool.front().join();
-			threadPool.pop();
+			std::string fileName = "output" + _id + ".csv";
+			_ostream = std::make_shared<std::ofstream>(fileName, std::ifstream::out);
+			if (!_ostream->is_open())
+			{
+				std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
+				system("pause");
+				throw std::exception("An error occurred while opening a file");
+			}
+
+			_progresses->emplace(id, 0);
 		}
-	}
-	template<typename FuncT>
-	void Slow(FuncT &&func, std::ostream &ostream, std::unordered_map<std::string, float> &progresses, std::string const &id) noexcept
-	{
-		CalcAverageOfRange(std::forward<FuncT>(func), 100, 10000, ostream, progresses, id);
-	}
-}
-
-namespace demonstration
-{
-	using FuntT = std::function<void(std::ostream&, std::unordered_map<std::string, float>&, std::string&)>;
-	bool Demonstrate(std::unordered_map<std::string, float> &progresses, std::string myName, FuntT func)
-	{
-		using namespace std::chrono;
-		progresses.emplace(myName, 0);
-
-		std::string fileName = "output" + myName + ".csv";
-		std::ofstream file(fileName, std::ifstream::out);
-		if (!file.is_open())
+		~Executor()
 		{
-			std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
-			system("pause");
-			return false;
+			if (_ostream && _ostream->is_open())
+				_ostream->close();
 		}
-		auto sThread = std::thread(func, std::ref(file), std::ref(progresses), std::ref(myName));
-		sThread.join();
+	};
 
-		return true;
-	}
+	class Sync : Executor
+	{
+	public:
+		template<typename StringT>
+		Sync(
+			StringT &&id,
+			std::shared_ptr<std::unordered_map<std::string, float>> const &progresses,
+			std::tuple<size_t, size_t> const &borders
+		)
+			: Executor(std::forward<StringT>(id), progresses, borders)
+		{
+		}
+
+		template<typename FuncT>
+		void Execute(FuncT &&func)
+		{
+			_progresses->at(_id) = 0;
+
+			size_t first = std::get<0>(_borders),
+					last = std::get<1>(_borders);
+
+			for (size_t size = first; size <= last; size += 100)
+			{
+				CalcAverage(std::forward<FuncT>(func), size, *_ostream.get());
+
+				// todo dry
+				std::lock_guard<std::mutex> progressUpdateLock(progressUpdate);
+				system("cls");
+				_progresses->at(_id) += 0.01;
+				Log::Progress(*_progresses.get());
+			}
+		}
+	};
+
+	class Async : Executor
+	{
+	public:
+		template<typename StringT>
+		Async(
+			StringT &&id,
+			std::shared_ptr<std::unordered_map<std::string, float>> const &progresses,
+			std::tuple<size_t, size_t> const &borders
+		)
+			: Executor(std::forward<StringT>(id), progresses, borders)
+		{
+		}
+
+		template<typename FuncT>
+		void Execute(FuncT &func)
+		{
+			_progresses->at(_id) = 0;
+
+			size_t bottom = std::get<0>(_borders), 
+					top = std::get<1>(_borders);
+
+			std::ostream &ostream = *_ostream;
+			std::unordered_map<std::string, float> &progresses = *_progresses.get();
+
+			using ThreadPool = std::queue<std::thread>;
+			ThreadPool threadPool;
+			for (size_t size = bottom; size <= top; size += 100)
+				threadPool.push(std::thread(&CalcAverage<FuncT>, func, size, std::ref(ostream)));
+
+
+			while (!threadPool.empty())
+			{
+				threadPool.front().join();
+
+				std::lock_guard<std::mutex> progressUpdateLock(progressUpdate);
+				system("cls");
+				_progresses->at(_id) += 0.01;// todo вычисление нормального процента
+				Log::Progress(*_progresses.get());
+
+				threadPool.pop();
+			}
+		}
+	};
 }
 
 int main()
@@ -126,24 +182,24 @@ int main()
 
 	using namespace std::chrono;
 
-	std::unordered_map<std::string, float> progresses;
+	std::tuple<size_t, size_t> borders(100, 10000);
+	std::shared_ptr<std::unordered_map<std::string, float>> progresses = std::make_shared<std::unordered_map<std::string, float>>();
 	auto testee = [](auto &info, auto begin, auto end, auto pred) { Sort::Insertion(info, begin, end, pred); };
 
+	executors::Sync syncExecutor("sync_impl", progresses, borders);
+
 	high_resolution_clock::time_point beginTime = high_resolution_clock::now();
-	demonstration::Demonstrate(progresses, "slow_impl", [testee](std::ostream &out, auto &progresses, auto &myName) {
-		impl::Slow(testee, out, progresses, myName);
-	});
-	std::chrono::duration<double, std::milli> slowImplDuration = beginTime - high_resolution_clock::now();
+	syncExecutor.Execute(testee);
+	std::chrono::duration<double, std::milli> syncImplDuration = beginTime - high_resolution_clock::now();
+
+	executors::Async asyncExecutor("async_impl", progresses, borders);
 
 	beginTime = high_resolution_clock::now();
-	demonstration::Demonstrate(progresses, "fast_impl", [testee](std::ostream &out, auto &progresses, auto &myName) {
-		static constexpr uint16_t threadsCount = 50;
-		impl::Fast(testee, out, progresses, myName, threadsCount);
-	});
-	std::chrono::duration<double, std::milli> fastImplDuration = beginTime - high_resolution_clock::now();
+	asyncExecutor.Execute(testee);
+	std::chrono::duration<double, std::milli> asyncImplDuration = beginTime - high_resolution_clock::now();
 
-	std::cout << "\nSlow implementation duration: " << slowImplDuration.count() << " ms.\n";
-	std::cout << "Fast implementation duration: " << fastImplDuration.count() << " ms.\n\n";
+	std::cout << "\Sync implementation duration: " << syncImplDuration.count() << " ms.\n";
+	std::cout << "Async implementation duration: " << asyncImplDuration.count() << " ms.\n\n";
 	std::cout << "Results in file \"" << std::experimental::filesystem::current_path() << "\\output?impl_name?.txt\"\n\n";
 
 	std::cout << "Variant 10 Insertion sort.\n\n";
