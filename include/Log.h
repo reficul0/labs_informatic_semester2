@@ -17,7 +17,8 @@ namespace Log
 		std::cout << "}\n";
 	}
 
-	void Progress(std::unordered_map<std::string, float> &progresses)
+	using ProgressesT = std::unordered_map<std::string, float>;
+	void Progress(ProgressesT &progresses)
 	{
 		int barWidth = 70;
 

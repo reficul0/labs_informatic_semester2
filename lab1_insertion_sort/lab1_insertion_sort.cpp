@@ -20,8 +20,8 @@ int main()
 		
 	Log::Print(arr.cbegin(), arr.cend(), "source array");
 	
-	Sort::Info<uint64_t> info{ 0,0 };
-	Sort::Insertion(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
+	Algorithm::Info<uint64_t> info{ 0,0 };
+	Algorithm::Sort::Insertion(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
 
 	Log::Print(arr.cbegin(), arr.cend(), "sorted array");
 	std::cout << "\nComparers count: " << info.comparers 
