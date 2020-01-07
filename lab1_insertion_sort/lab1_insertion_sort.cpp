@@ -7,7 +7,7 @@
 #include <time.h>
 #include <algorithm>
 
-#include "../include/IOPlugin.h"
+#include "../include/io_plugin.h"
 #include "../include/Sort.h"
 #include "../include/Log.h"
 
@@ -20,8 +20,8 @@ int main()
 		
 	Log::Print(arr.cbegin(), arr.cend(), "source array");
 	
-	Algorithm::Info<uint64_t> info{ 0,0 };
-	Algorithm::Sort::Insertion(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
+	algorithm::info<uint64_t> info{ 0,0 };
+	algorithm::sort::Insertion(info, arr.begin(), arr.end(), [](auto first, auto second) { return *first > *second; });
 
 	Log::Print(arr.cbegin(), arr.cend(), "sorted array");
 	std::cout << "\nComparers count: " << info.comparers 

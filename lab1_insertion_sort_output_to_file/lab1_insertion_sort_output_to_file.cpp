@@ -18,279 +18,219 @@
 #include <chrono>
 #include <ratio>
 #include <unordered_map>
+#include <queue>
+#include <shared_mutex>
+#include <thread>
 
-#include "../include/Sort.h"
-#include "../include/Log.h"
+#include "../include/sort.h"
+#include "../include/log.h"
+#include "../include/ptr.h"
 
-using TestContainerT = std::vector<int64_t>;
 
-namespace Algorithm
+namespace asio
 {
-	namespace Test
+	namespace container
 	{
-		using AlgorithmT = std::function<
-			void(
-				Algorithm::Info<uint64_t>&,
-				typename TestContainerT::iterator/*from first*/,
-				typename TestContainerT::iterator/*to last*/,
-				std::function</*comparer*/
-					bool(
-						typename TestContainerT::iterator,
-						typename TestContainerT::iterator
-					)
-				>
-			)
-		>;
-
-		class AverageCalculator
+		template<class _Ty,
+			class _Container = std::deque<_Ty> >
+			class queue
+			: std::queue<_Ty, _Container>
 		{
-			// Class contains container-specific logic.
+			using baseT = typename std::queue<_Ty, _Container>;
 		public:
-			using FillierT = std::function<typename TestContainerT::value_type()>;
+			bool empty() const
+			{
+				_STD shared_lock<_STD shared_mutex> lock(_mtx);
+				return (baseT::empty());
+			}
+
+			void push(baseT::value_type&& _Val)
+			{
+				_STD unique_lock<_STD shared_mutex> lock(_mtx);
+				baseT::push(_STD move(_Val));
+			}
+			void push(baseT::value_type const &_Val)
+			{
+				_STD unique_lock<_STD shared_mutex> lock(_mtx);
+				baseT::push_back(_STD move(_Val));
+			}
+
+			void pop()
+			{
+				_STD unique_lock<_STD shared_mutex> lock(_mtx);
+				baseT::pop();
+			}
+
+			baseT::reference front()
+			{
+				_STD shared_lock<_STD shared_mutex> lock(_mtx);
+				// return first element of mutable queue
+				return (baseT::front());
+			}
+			baseT::const_reference front() const
+			{
+				_STD shared_lock<_STD shared_mutex> lock(_mtx);
+				// return first element of nonmutable queue
+				return (baseT::front());
+			}
 		private:
-			size_t _repeats;
-			FillierT _filler;
-
-			template<class ContainerT>
-			inline ContainerT GetContainer(size_t size)
-			{
-				ContainerT container;
-
-				container.resize(size);
-				std::generate(container.begin(), container.end(), _filler);
-
-				return std::move(container);
-			}
-		public:
-			template<typename FillingFuncT>
-			AverageCalculator(size_t repeats, FillingFuncT &&filler)
-				: _repeats(repeats)
-				, _filler(std::forward<FillingFuncT>(filler))
-			{
-			}
-
-			template<class ContainerT>
-			void Calculate(AlgorithmT &func, size_t containerSize, std::promise< std::tuple<size_t, float> > &&result)
-			{
-				std::vector<Algorithm::Info<uint64_t>> infos(_repeats);
-				for (size_t i(0); i < infos.size(); ++i)
-				{
-					auto container(GetContainer<ContainerT>(containerSize));
-
-					Algorithm::Info<uint64_t> info{ 0,0 };
-					func(info, container.begin(), container.end(), [](auto first, auto second) { return *first > *second; });
-					infos[i] = info;
-				}
-
-				Algorithm::Info<float> averageInfo{ 0,0 };
-				for (auto const &info : infos)
-				{
-					averageInfo.comparers += info.comparers;
-					averageInfo.swaps += info.swaps;
-				}
-				averageInfo.comparers /= infos.size();
-				averageInfo.swaps /= infos.size();
-
-				result.set_value(std::make_tuple(containerSize, averageInfo.comparers + averageInfo.swaps));
-			}
-		};
-
-		class Executor
-		{
-		public:
-			using Ptr = std::shared_ptr<Executor>;
-			using BordersT = std::tuple<size_t/*first*/, size_t/*last*/>;
-		protected:
-			using ExecutionResultT = std::tuple<size_t, float>;
-
-			AverageCalculator _calculator;
-
-			std::string const _id;
-			std::shared_ptr<std::ofstream> _ostream;
-			std::shared_ptr<Log::ProgressesT> _progresses;
-
-			BordersT _borders;
-			size_t _stepSize;
-
-			mutable std::mutex _outputToFile;
-
-			void _PutOutResult(ExecutionResultT &executeResult)
-			{
-				std::lock_guard<std::mutex> outputToFileLock(_outputToFile);
-				(*_ostream.get()) << std::get<0>(executeResult) << "; " << std::get<1>(executeResult) << '\n';
-			}
-			virtual void _UpdateProgresses(ExecutionResultT &executeResult)
-			{
-				_progresses->at(_id) += (double)_stepSize / std::get<1>(_borders);
-				system("cls");
-				Log::Progress(*_progresses.get());
-			}
-			void _OnProgress(ExecutionResultT executeResult)
-			{
-				_PutOutResult(executeResult);
-				_UpdateProgresses(executeResult);
-			}
-		public:
-			template<typename StringT, typename CalculatorT>
-			Executor(
-				StringT &&id,
-				std::shared_ptr<Log::ProgressesT> const &progresses,
-				BordersT const &borders,
-				CalculatorT &&calculator
-			)
-				: _id(std::forward<StringT>(id))
-				, _progresses(progresses)
-				, _borders(borders)
-				, _stepSize(100)
-				, _calculator(std::forward<CalculatorT>(calculator))
-			{
-				std::string fileName = "output" + _id + ".csv";
-				_ostream = std::make_shared<std::ofstream>(fileName, std::ifstream::out);
-				if (!_ostream->is_open())
-				{
-					std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
-					system("pause");
-					throw std::exception("An error occurred while opening a file");
-				}
-
-				_progresses->emplace(id, 0);
-			}
-			virtual ~Executor()
-			{
-				if (_ostream && _ostream->is_open())
-					_ostream->close();
-			}
-
-			virtual void Execute(AlgorithmT&) = 0;
-		};
-		class SyncExecutor : public Executor
-		{
-		public:
-			template<typename StringT, typename CalculatorT>
-			SyncExecutor(
-				StringT &&id,
-				std::shared_ptr<Log::ProgressesT> const &progresses,
-				BordersT const &borders,
-				CalculatorT &&calculator
-			)
-				: Executor(std::forward<StringT>(id), progresses, borders, std::forward<CalculatorT>(calculator))
-			{
-			}
-
-			void Execute(AlgorithmT &func) override
-			{
-				_progresses->at(_id) = 0;
-
-				size_t bottom = std::get<0>(_borders),
-					top = std::get<1>(_borders);
-
-				for (size_t size = bottom; size <= top; size += _stepSize)
-				{
-					std::promise<ExecutionResultT> promise;
-					auto future = promise.get_future();
-					_calculator.Calculate<TestContainerT>(func, size, std::move(promise));
-					_OnProgress(future.get());
-				}
-			}
-		};
-		class AsyncExecutor : public Executor
-		{
-			std::mutex _progressUpdate;
-		protected:
-			void _UpdateProgresses(ExecutionResultT &executeResult) override
-			{
-				std::lock_guard<std::mutex> progressUpdateLock(_progressUpdate);
-				Executor::_UpdateProgresses(executeResult);
-			}
-		public:
-			template<typename StringT, typename CalculatorT>
-			AsyncExecutor(
-				StringT &&id,
-				std::shared_ptr<Log::ProgressesT> const &progresses,
-				BordersT const &borders,
-				CalculatorT &&calculator
-			)
-				: Executor(std::forward<StringT>(id), progresses, borders, std::forward<CalculatorT>(calculator))
-			{
-			}
-
-			void Execute(AlgorithmT &func) override
-			{
-				_progresses->at(_id) = 0;
-
-				size_t bottom = std::get<0>(_borders),
-					top = std::get<1>(_borders);
-
-				using TaskT = std::tuple<std::thread, std::future<ExecutionResultT>>;
-				using ThreadsPool = std::stack<TaskT>;
-
-				ThreadsPool threadsPool;
-				for (size_t size = top; size >= bottom; size -= _stepSize)
-				{
-					std::promise<ExecutionResultT> promise;
-					auto future = promise.get_future();
-					threadsPool.emplace(
-						std::make_tuple(
-							std::thread(
-								&AverageCalculator::Calculate<TestContainerT>,
-								&_calculator, std::ref(func), size, std::move(promise)
-							),
-							std::move(future)
-						)
-					);
-				}
-
-				while (!threadsPool.empty())
-				{
-					auto &task = threadsPool.top();
-					std::get<0>(task).join();
-					_OnProgress(std::get<1>(task).get());
-					threadsPool.pop();
-				}
-			}
-		};
-
-		class ExecutionBenchmark
-		{
-			Executor::Ptr _excecutor;
-		public:
-			ExecutionBenchmark(Executor::Ptr excecutor)
-				: _excecutor(excecutor)
-			{}
-
-			std::chrono::duration<double, std::milli> operator()(Test::AlgorithmT &func)
-			{
-				using namespace std::chrono;
-				high_resolution_clock::time_point beginTime = high_resolution_clock::now();
-				_excecutor->Execute(func);
-				return beginTime - high_resolution_clock::now();
-			}
-			void Reset(Executor::Ptr excecutor = nullptr)
-			{
-				_excecutor = excecutor;
-			}
+			mutable _STD shared_mutex _mtx;
 		};
 	}
+
+	class io_service
+	{
+	public:
+		using CompletionHandlerT = std::function<void()>;
+		io_service(std::chrono::milliseconds wait_timeout = std::chrono::milliseconds(10))
+			: _wait_timeout(wait_timeout)
+		{
+
+		}
+
+		template<typename CompletionHandler>
+		void post(CompletionHandler handler)
+		{
+			_tasks.push(handler);
+		}
+		void run()
+		{
+			while (!_tasks.empty())
+				_run_task();
+		}
+		void run_one()
+		{
+			if (!_tasks.empty())
+				_run_task();
+		}
+
+		// wait until tasks are completed 
+		void wait()
+		{
+			while (!_tasks.empty())
+				std::this_thread::sleep_for(_wait_timeout);
+		}
+
+		class strand
+		{
+		public:
+			strand(io_service *service)
+				: _service(service)
+				, _isInterrupted(false)
+			{
+			}
+
+			template<typename CompletionHandler>
+			void post(CompletionHandler handler)
+			{
+				_service->post(handler);
+			}
+			void run()
+			{
+				while (!_isInterrupted.load())
+					_service->run_one();
+			}
+			// wait until tasks are completed or strand is interrupted
+			void wait()
+			{
+				while (!_service->_tasks.empty() && !_isInterrupted.load())
+					std::this_thread::sleep_for(_service->_wait_timeout);
+			}
+
+			// interrupt all operations as run and wait
+			void interrupt()
+			{
+				_isInterrupted.store(true);
+			}
+
+		private:
+			io_service *_service;
+			std::atomic<bool> _isInterrupted;
+		};
+
+	private:
+		void _run_task()
+		{
+			auto &task = _tasks.front();
+			task();
+			_tasks.pop();
+		}
+		container::queue<CompletionHandlerT> _tasks;
+		std::chrono::milliseconds _wait_timeout;
+	};
 }
 
+template<class ContainerT>
+ContainerT PrepareContainer(size_t size, std::function<typename ContainerT::value_type()> &fillerFunc)
+{
+	ContainerT container;
+
+	container.resize(size);
+	std::generate(container.begin(), container.end(), fillerFunc);
+
+	return std::move(container);
+}
+
+template<class ContainerT, class TesteeFuncT>
+algorithm::info<double> TestAndGetAverageInfo(size_t containerSize, size_t repeats, TesteeFuncT testee, std::function<typename ContainerT::value_type()> containerFiller)
+{
+	auto container = PrepareContainer<ContainerT>(containerSize, containerFiller);
+	std::vector<algorithm::info<uint64_t>> infos(repeats);
+	std::generate(infos.begin(), infos.end(), [&testee, &container, containerSize, &containerFiller]()
+	{
+		std::random_shuffle(container.begin(), container.end());
+		algorithm::info<uint64_t> info{ 0,0 };
+		testee(info, container.begin(), container.end(), [](auto first, auto second) { return *first > *second; });
+		return info;
+	});
+
+	algorithm::info<double> averageInfo{ 0,0 };
+	for (auto const &info : infos)
+	{
+		averageInfo.comparers += info.comparers;
+		averageInfo.swaps += info.swaps;
+	}
+	averageInfo.comparers /= infos.size();
+	averageInfo.swaps /= infos.size();
+
+	return averageInfo;
+};
 
 int main()
 {
+	std::string fileName = "./output.csv";
+	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if(out->is_open()) out->close(); delete out; });
+	if (!ostream->is_open())
+	{
+		std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
+		system("pause");
+		throw std::exception("An error occurred while opening a file");
+	}
+
 	std::srand(unsigned(time(0)));
+	auto filler = []() noexcept { return rand() % 2000 - 1000; };
+	auto testee = [](auto &info, auto begin, auto end, auto pred) { algorithm::sort::Insertion(info, begin, end, pred); };
 
-	using namespace Algorithm::Test;
+	size_t repeats = 5;
 
-	Executor::BordersT borders(100, 10000);
-	std::shared_ptr<Log::ProgressesT> progresses = std::make_shared<Log::ProgressesT>();
-	AverageCalculator::FillierT filler = []() noexcept { return rand() % 2000 - 1000; };
-	AlgorithmT testee = [](auto &info, auto begin, auto end, auto pred) { Algorithm::Sort::Insertion(info, begin, end, pred); };
+	asio::io_service testService;
+	asio::io_service::strand test(&testService);
+	auto strandThreadFunc = [](asio::io_service::strand *strand) { strand->run(); };
 
-	auto syncImplDuration  = ExecutionBenchmark(std::make_shared<SyncExecutor>("sync_impl", progresses, borders, AverageCalculator(5, filler)))(testee);
-	auto asyncImplDuration = ExecutionBenchmark(std::make_shared<AsyncExecutor>("async_impl", progresses, borders, AverageCalculator(5, filler)))(testee);
+	auto testAndOutputResultToFile = [](size_t containerSize, size_t repeats, auto testee, auto containerFiller, std::ofstream *out)
+	{
+		auto averageInfo = TestAndGetAverageInfo<std::vector<int64_t>>(containerSize, repeats, testee, containerFiller);
+		(*out) << containerSize << "; " << (averageInfo.comparers + averageInfo.swaps) << '\n';
+	};
 
-	std::cout << "\Sync implementation duration: " << syncImplDuration.count() << " ms.\n";
-	std::cout << "Async implementation duration: " << asyncImplDuration.count() << " ms.\n\n";
-	std::cout << "Results in file \"" << std::experimental::filesystem::current_path() << "\\output?impl_name?.txt\"\n\n";
+	auto testThread = ptr<std::thread>(new std::thread(std::bind(strandThreadFunc, &test)), [](std::thread* thread) { if (thread->joinable()) thread->join(); delete thread; });
+
+
+	for (size_t arraySizeForTest = 100; arraySizeForTest <= 10000; arraySizeForTest+=100)
+		test.post(std::bind(testAndOutputResultToFile, arraySizeForTest, repeats, testee, filler, ostream.get()));
+
+	test.wait();// wait untill tasks are completed
+	test.interrupt();// stop test thread
 
 	std::cout << "Variant 10 Insertion sort.\n\n";
 

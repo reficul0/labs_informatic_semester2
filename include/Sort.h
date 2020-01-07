@@ -5,15 +5,15 @@
 #include <functional>
 #include <tuple>
 
-namespace Algorithm
+namespace algorithm
 {
 	template<class AccuracyT>
-	struct Info
+	struct info
 	{
 		AccuracyT swaps;
 		AccuracyT comparers;
 	};
-	namespace Sort
+	namespace sort
 	{
 		template<class IterT, class PredicateT>
 		void Insertion(IterT first, IterT last, PredicateT pred)
