@@ -161,7 +161,7 @@ public:
 int main()
 {
 	std::string fileName = "./output.csv";
-	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if (out->is_open()) out->close(); });
+	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if (out->is_open()) out->close();  delete out; });
 	if (!ostream->is_open())
 	{
 		std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
@@ -182,7 +182,7 @@ int main()
 	reficul::asio::container::deque<std::pair<size_t, algorithm::info<double>>> results;
 	{
 		auto testers = ptr<boost::thread_group>(new boost::thread_group(), [](boost::thread_group* threads) {
-			threads->interrupt_all(); threads->join_all();
+			threads->interrupt_all(); threads->join_all(); delete threads;
 		});
 
 		size_t repeats = 5;
