@@ -18,146 +18,92 @@
 #include <chrono>
 #include <ratio>
 #include <unordered_map>
-#include <queue>
+#include <deque>
 #include <shared_mutex>
-#include <thread>
+
+#include <boost/thread.hpp>
 
 #include "../include/sort.h"
 #include "../include/log.h"
 #include "../include/ptr.h"
 
 
-namespace asio
+namespace reficul
 {
-	namespace container
+	namespace asio
 	{
-		template<class _Ty,
-			class _Container = std::deque<_Ty> >
-			class queue
-			: std::queue<_Ty, _Container>
+		namespace container
 		{
-			using baseT = typename std::queue<_Ty, _Container>;
-		public:
-			bool empty() const
+			// потокобезопасный дэк
+			template<class _Ty,
+				class _Container = std::deque<_Ty> >
+				class deque
+				: std::deque<_Ty, _Container>
 			{
-				_STD shared_lock<_STD shared_mutex> lock(_mtx);
-				return (baseT::empty());
-			}
+				using baseT = typename std::deque<_Ty, _Container>;
+			public:
+				bool empty() const
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return (baseT::empty());
+				}
 
-			void push(baseT::value_type&& _Val)
-			{
-				_STD unique_lock<_STD shared_mutex> lock(_mtx);
-				baseT::push(_STD move(_Val));
-			}
-			void push(baseT::value_type const &_Val)
-			{
-				_STD unique_lock<_STD shared_mutex> lock(_mtx);
-				baseT::push_back(_STD move(_Val));
-			}
+				void push_back(typename baseT::value_type&& _Val)
+				{
+					_STD unique_lock<_STD shared_mutex> lock(_mtx);
+					baseT::push_back(_STD move(_Val));
+				}
+				void push(typename baseT::value_type const &_Val)
+				{
+					_STD unique_lock<_STD shared_mutex> lock(_mtx);
+					baseT::push_back(_STD move(_Val));
+				}
 
-			void pop()
-			{
-				_STD unique_lock<_STD shared_mutex> lock(_mtx);
-				baseT::pop();
-			}
+				void pop()
+				{
+					_STD unique_lock<_STD shared_mutex> lock(_mtx);
+					baseT::pop();
+				}
 
-			baseT::reference front()
-			{
-				_STD shared_lock<_STD shared_mutex> lock(_mtx);
-				// return first element of mutable queue
-				return (baseT::front());
-			}
-			baseT::const_reference front() const
-			{
-				_STD shared_lock<_STD shared_mutex> lock(_mtx);
-				// return first element of nonmutable queue
-				return (baseT::front());
-			}
-		private:
-			mutable _STD shared_mutex _mtx;
-		};
+				typename baseT::reference front()
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return (baseT::front());
+				}
+				typename baseT::const_reference front() const
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return (baseT::front());
+				}
+
+				typename baseT::iterator begin() _NOEXCEPT
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return baseT::begin();
+				}
+
+				typename baseT::const_iterator begin() const _NOEXCEPT
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return baseT::begin();
+				}
+
+				typename baseT::iterator end() _NOEXCEPT
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return baseT::end();
+				}
+
+				typename baseT::const_iterator end() const _NOEXCEPT
+				{
+					_STD shared_lock<_STD shared_mutex> lock(_mtx);
+					return baseT::end();
+				}
+			private:
+				mutable _STD shared_mutex _mtx;
+			};
+		}
 	}
-
-	class io_service
-	{
-	public:
-		using CompletionHandlerT = std::function<void()>;
-		io_service(std::chrono::milliseconds wait_timeout = std::chrono::milliseconds(10))
-			: _wait_timeout(wait_timeout)
-		{
-
-		}
-
-		template<typename CompletionHandler>
-		void post(CompletionHandler handler)
-		{
-			_tasks.push(handler);
-		}
-		void run()
-		{
-			while (!_tasks.empty())
-				_run_task();
-		}
-		void run_one()
-		{
-			if (!_tasks.empty())
-				_run_task();
-		}
-
-		// wait until tasks are completed 
-		void wait()
-		{
-			while (!_tasks.empty())
-				std::this_thread::sleep_for(_wait_timeout);
-		}
-
-		class strand
-		{
-		public:
-			strand(io_service *service)
-				: _service(service)
-				, _isInterrupted(false)
-			{
-			}
-
-			template<typename CompletionHandler>
-			void post(CompletionHandler handler)
-			{
-				_service->post(handler);
-			}
-			void run()
-			{
-				while (!_isInterrupted.load())
-					_service->run_one();
-			}
-			// wait until tasks are completed or strand is interrupted
-			void wait()
-			{
-				while (!_service->_tasks.empty() && !_isInterrupted.load())
-					std::this_thread::sleep_for(_service->_wait_timeout);
-			}
-
-			// interrupt all operations as run and wait
-			void interrupt()
-			{
-				_isInterrupted.store(true);
-			}
-
-		private:
-			io_service *_service;
-			std::atomic<bool> _isInterrupted;
-		};
-
-	private:
-		void _run_task()
-		{
-			auto &task = _tasks.front();
-			task();
-			_tasks.pop();
-		}
-		container::queue<CompletionHandlerT> _tasks;
-		std::chrono::milliseconds _wait_timeout;
-	};
 }
 
 template<class ContainerT>
@@ -168,7 +114,7 @@ ContainerT PrepareContainer(size_t size, std::function<typename ContainerT::valu
 	container.resize(size);
 	std::generate(container.begin(), container.end(), fillerFunc);
 
-	return std::move(container);
+	return container;// не перемещаем т.к. nrvo
 }
 
 template<class ContainerT, class TesteeFuncT>
@@ -196,10 +142,26 @@ algorithm::info<double> TestAndGetAverageInfo(size_t containerSize, size_t repea
 	return averageInfo;
 };
 
+struct ResultsStreamSupport
+	: public std::pair<size_t, algorithm::info<double>>
+{
+	using baseT = typename std::pair<size_t, algorithm::info<double>>;
+public:
+	ResultsStreamSupport(baseT const& from) noexcept
+	{
+		this->first = from.first;
+		this->second = from.second;
+	}
+	friend std::ostream &operator << (std::ostream &out, baseT const &dest)
+	{
+		return out << dest.first << "; " << (dest.second.comparers + dest.second.swaps);
+	}
+};
+
 int main()
 {
 	std::string fileName = "./output.csv";
-	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if(out->is_open()) out->close(); delete out; });
+	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if (out->is_open()) out->close(); });
 	if (!ostream->is_open())
 	{
 		std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
@@ -211,26 +173,28 @@ int main()
 	auto filler = []() noexcept { return rand() % 2000 - 1000; };
 	auto testee = [](auto &info, auto begin, auto end, auto pred) { algorithm::sort::Insertion(info, begin, end, pred); };
 
-	size_t repeats = 5;
-
-	asio::io_service testService;
-	asio::io_service::strand test(&testService);
-	auto strandThreadFunc = [](asio::io_service::strand *strand) { strand->run(); };
-
-	auto testAndOutputResultToFile = [](size_t containerSize, size_t repeats, auto testee, auto containerFiller, std::ofstream *out)
+	auto testAndStoreResult = [](size_t containerSize, size_t repeats, auto testee, auto containerFiller, auto &results)
 	{
-		auto averageInfo = TestAndGetAverageInfo<std::vector<int64_t>>(containerSize, repeats, testee, containerFiller);
-		(*out) << containerSize << "; " << (averageInfo.comparers + averageInfo.swaps) << '\n';
+		auto info = TestAndGetAverageInfo<std::vector<int64_t>>(containerSize, repeats, testee, containerFiller);
+		results.push(std::make_pair(containerSize, info));
 	};
+	
+	reficul::asio::container::deque<std::pair<size_t, algorithm::info<double>>> results;
+	{
+		auto testers = ptr<boost::thread_group>(new boost::thread_group(), [](boost::thread_group* threads) {
+			threads->interrupt_all(); threads->join_all();
+		});
 
-	auto testThread = ptr<std::thread>(new std::thread(std::bind(strandThreadFunc, &test)), [](std::thread* thread) { if (thread->joinable()) thread->join(); delete thread; });
+		size_t repeats = 5;
+		for (size_t arraySizeForTest = 10000; arraySizeForTest >= 100; arraySizeForTest -= 100)
+			testers->create_thread(std::bind(testAndStoreResult, arraySizeForTest, repeats, testee, filler, std::ref(results)));
+	}
 
-
-	for (size_t arraySizeForTest = 100; arraySizeForTest <= 10000; arraySizeForTest+=100)
-		test.post(std::bind(testAndOutputResultToFile, arraySizeForTest, repeats, testee, filler, ostream.get()));
-
-	test.wait();// wait untill tasks are completed
-	test.interrupt();// stop test thread
+	// сортируем т.к. вычисление результатов асинхронное
+	std::sort(results.begin(), results.end(), [](decltype(*results.begin()) lhs, decltype(*results.begin()) rhs) {
+		return lhs.first < rhs.first;
+	});
+	std::copy( results.begin(), results.end(), std::ostream_iterator<ResultsStreamSupport>((*ostream), "\n") );
 
 	std::cout << "Variant 10 Insertion sort.\n\n";
 
