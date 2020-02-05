@@ -118,10 +118,10 @@ ContainerT PrepareContainer(size_t size, std::function<typename ContainerT::valu
 }
 
 template<class ContainerT, class TesteeFuncT>
-algorithm::info<double> TestAndGetAverageInfo(size_t containerSize, size_t repeats, TesteeFuncT testee, std::function<typename ContainerT::value_type()> containerFiller)
+algorithm::info<double> TestAndGetAverageInfo(size_t containerSize, size_t testRepeats, TesteeFuncT testee, std::function<typename ContainerT::value_type()> containerFiller)
 {
 	auto container = PrepareContainer<ContainerT>(containerSize, containerFiller);
-	std::vector<algorithm::info<uint64_t>> infos(repeats);
+	std::vector<algorithm::info<uint64_t>> infos(testRepeats);
 	std::generate(infos.begin(), infos.end(), [&testee, &container, containerSize, &containerFiller]()
 	{
 		std::random_shuffle(container.begin(), container.end());
@@ -161,7 +161,10 @@ public:
 int main()
 {
 	std::string fileName = "./output.csv";
-	auto ostream = ptr<std::ofstream>(new std::ofstream(fileName), [](std::ofstream* out) { if (out->is_open()) out->close();  delete out; });
+	auto ostream = ptr<std::ofstream>(
+		new std::ofstream(fileName), 
+		[](std::ofstream* out) { if (out->is_open()) out->close();  delete out; }
+	);// RAII
 	if (!ostream->is_open())
 	{
 		std::cout << "An error occurred while opening a file \"" << std::experimental::filesystem::current_path() << "\\" << fileName << "\"\n";
@@ -173,24 +176,78 @@ int main()
 	auto filler = []() noexcept { return rand() % 2000 - 1000; };
 	auto testee = [](auto &info, auto begin, auto end, auto pred) { algorithm::sort::Insertion(info, begin, end, pred); };
 
-	auto testAndStoreResult = [](size_t containerSize, size_t repeats, auto testee, auto containerFiller, auto &results)
+	size_t const 
+		containerSizeUpperBound = 10000,
+		fromTestToTestSizeDiff = 100;
+
+	auto testAndStoreResult = [](size_t containerSize, size_t testRepeats, auto testee, auto containerFiller, auto &results)
 	{
-		auto info = TestAndGetAverageInfo<std::vector<int64_t>>(containerSize, repeats, testee, containerFiller);
+		auto info = TestAndGetAverageInfo<std::vector<int64_t>>(containerSize, testRepeats, testee, containerFiller);
 		results.push(std::make_pair(containerSize, info));
 	};
+	auto testBlockAndStoreResults = [fromTestToTestSizeDiff, &testAndStoreResult](size_t begin_inclusive, size_t end_notInclusive, size_t testRepeats, auto testee, auto containerFiller, auto &results)
+	{
+		// Первыми на исполнение отправим самые долгие тесты, за счет чего выиграем во времени ожидания
+		for (auto current = end_notInclusive - fromTestToTestSizeDiff; current >= begin_inclusive; current -= fromTestToTestSizeDiff)
+			testAndStoreResult(current, testRepeats, testee, containerFiller, results);
+	};
 	
+	/* 
+		Вычислять будем асинхронно, ибо синхронно - долго.
+		Чтрбы асинхронность не была мелвежей услугой, будем учитывать количество потоков, поддерживаемых машиной.
+		Иначе будет происходить рост временени, затрачиваемого на контекстные переключения, что приведет к потере производительности.
+	*/
+	size_t const 
+		testsCount = containerSizeUpperBound / fromTestToTestSizeDiff,
+		testsCountPerThreadLimit = 5,
+		maxThreads = (testsCount + testsCountPerThreadLimit - 1) / testsCountPerThreadLimit,
+		//The number of hardware threads available on the current system (e.g. number of CPUs or cores or hyperthreading units), or 0 if this information is not available. 
+		hardwareThreadsLimit = boost::thread::hardware_concurrency();
+
+	size_t const
+		optimalThreadsCount = std::min(hardwareThreadsLimit ? hardwareThreadsLimit : 2, maxThreads),
+		testsPerThread = testsCount / optimalThreadsCount;
+	bool const doAvailableThreadsCoverAllTests = !(testsCount % optimalThreadsCount);
+
 	reficul::asio::container::deque<std::pair<size_t, algorithm::info<double>>> results;
 	{
 		auto testers = ptr<boost::thread_group>(new boost::thread_group(), [](boost::thread_group* threads) {
 			threads->interrupt_all(); threads->join_all(); delete threads;
-		});
+		});// RAII
 
-		size_t repeats = 5;
-		for (size_t arraySizeForTest = 10000; arraySizeForTest >= 100; arraySizeForTest -= 100)
-			testers->create_thread(std::bind(testAndStoreResult, arraySizeForTest, repeats, testee, filler, std::ref(results)));
+		size_t threadFirstTestContainerSize = fromTestToTestSizeDiff, const testRepeats = 5;
+		for (size_t threadId = 0; threadId < optimalThreadsCount; ++threadId)
+		{
+			size_t threadLastTestContainerSize = threadFirstTestContainerSize + testsPerThread * fromTestToTestSizeDiff;
+			testers->create_thread(
+				std::bind(
+					testBlockAndStoreResults, 
+					threadFirstTestContainerSize, 
+					threadLastTestContainerSize, 
+					testRepeats, 
+					testee,
+					filler, 
+					std::ref(results)
+				)
+			);
+			threadFirstTestContainerSize = threadLastTestContainerSize;
+		}
+		if(!doAvailableThreadsCoverAllTests)
+			testers->create_thread(
+				std::bind(
+					testBlockAndStoreResults, 
+					threadFirstTestContainerSize, 
+					containerSizeUpperBound + fromTestToTestSizeDiff, 
+					testRepeats, 
+					testee, 
+					filler, 
+					std::ref(results)
+				)
+			);
+
 	}
 
-	// сортируем т.к. вычисление результатов асинхронное
+	// Упорядочим т.к. результаты сохранялись асинхронно.
 	std::sort(results.begin(), results.end(), [](decltype(*results.begin()) lhs, decltype(*results.begin()) rhs) {
 		return lhs.first < rhs.first;
 	});
